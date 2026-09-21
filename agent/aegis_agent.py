@@ -13,8 +13,8 @@ try:
 except ImportError:
     msvcrt = None
 
-# Local or Render backend endpoint
-GATEWAY_URL = "http://127.0.0.1:8000/api/v1/evaluate-risk"
+# Change from localhost to your live Render endpoint:
+GATEWAY_URL = "https://aegis-ztna-system.onrender.com/api/v1/evaluate-risk"
 
 
 def capture_keystroke_cadence(prompt="Enter Passphrase: ") -> tuple[str, float]:
