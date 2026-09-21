@@ -12,20 +12,79 @@ import {
   FileText,
   Eye,
   EyeOff,
-  RotateCcw
+  RotateCcw,
+  Upload,
+  Download,
+  FileCheck
 } from 'lucide-react';
 
 const BACKEND_URL = "https://aegis-ztna-system.onrender.com";
+
+// =============================================================================
+// BROWSER-NATIVE AES-256-GCM CRYPTOGRAPHIC ROUTINES (Web Crypto API)
+// =============================================================================
+async function deriveKey(passphrase, salt) {
+  const enc = new TextEncoder();
+  const keyMaterial = await window.crypto.subtle.importKey(
+    "raw",
+    enc.encode(passphrase),
+    { name: "PBKDF2" },
+    false,
+    ["deriveKey"]
+  );
+  return window.crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: salt,
+      iterations: 100000,
+      hash: "SHA-256"
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptFileData(arrayBuffer, passphrase) {
+  const salt = window.crypto.getRandomValues(new Uint8Array(16));
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(passphrase, salt);
+  const ciphertext = await window.crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: iv },
+    key,
+    arrayBuffer
+  );
+
+  const combined = new Uint8Array(salt.byteLength + iv.byteLength + ciphertext.byteLength);
+  combined.set(salt, 0);
+  combined.set(iv, salt.byteLength);
+  combined.set(new Uint8Array(ciphertext), salt.byteLength + iv.byteLength);
+  return combined;
+}
+
+async function decryptFileData(combinedBuffer, passphrase) {
+  const combined = new Uint8Array(combinedBuffer);
+  const salt = combined.slice(0, 16);
+  const iv = combined.slice(16, 28);
+  const ciphertext = combined.slice(28);
+  const key = await deriveKey(passphrase, salt);
+  return await window.crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: iv },
+    key,
+    ciphertext
+  );
+}
 
 export default function App() {
   const [identity, setIdentity] = useState("sanjana@enterprise.com");
   const [asset, setAsset] = useState("Confidential_Enterprise_Report.txt");
   
-  // Dynamic passphrase state (user-defined on the fly)
+  // Custom Dynamic Passphrase Enrollment
   const [registeredPassphrase, setRegisteredPassphrase] = useState("MySecureKey123");
   const [showRegisteredPass, setShowRegisteredPass] = useState(false);
   
-  // Challenge test passphrase state
+  // Challenge input state
   const [passphrase, setPassphrase] = useState("");
   const [showChallengePass, setShowChallengePass] = useState(false);
   
@@ -33,11 +92,18 @@ export default function App() {
   const [accessHour, setAccessHour] = useState(new Date().getHours());
   const [violations, setViolations] = useState(0);
   const [isEvaluating, setIsEvaluating] = useState(false);
+  
+  // Vault File State
+  const [activeVaultFile, setActiveVaultFile] = useState(null);
+  const [unlockedDownloadUrl, setUnlockedDownloadUrl] = useState(null);
+  const [unlockedFileName, setUnlockedFileName] = useState(null);
+  const fileInputRef = useRef(null);
+
   const [terminalLogs, setTerminalLogs] = useState([
     "[SYSTEM BOOT] Aegis ZTNA Autonomous Controller v1.0.0 Online.",
     "[AI ENGINE] Isolation Forest baseline profile loaded (Contamination: 8%).",
     "[WEB3] Polygon Amoy contract listener initialized at 0x4a96...01d0.",
-    "[SECURITY POLICY] Dynamic asset credential enrollment ready.",
+    "[SECURITY POLICY] Browser-native AES-256-GCM vault subsystem ready.",
     "Awaiting challenge request initialization..."
   ]);
   const [auditTrail, setAuditTrail] = useState([]);
@@ -46,7 +112,6 @@ export default function App() {
   const lastKeyTime = useRef(null);
   const intervals = useRef([]);
 
-  // Fetch recent ledger events from Render backend
   const fetchAuditLogs = async () => {
     try {
       const res = await fetch(`${BACKEND_URL}/api/v1/telemetry-logs`);
@@ -65,10 +130,45 @@ export default function App() {
     return () => clearInterval(pollInterval);
   }, []);
 
-  // Measure Inter-Key Timing (cadence in ms) in real time
+  // ---------------------------------------------------------------------------
+  // FIX 1: KEYSTROKE CAPTURE WITH CLEAN BACKSPACE RESET
+  // ---------------------------------------------------------------------------
+  const handlePassphraseChange = (e) => {
+    const val = e.target.value;
+    setPassphrase(val);
+
+    // If user cleared the input with backspaces, immediately reset cadence to 0
+    if (!val || val.length === 0) {
+      setCadence(0);
+      intervals.current = [];
+      lastKeyTime.current = null;
+    }
+  };
+
   const handleKeyDown = (e) => {
     const now = performance.now();
-    if (lastKeyTime.current !== null && e.key !== "Backspace" && e.key !== "Enter") {
+
+    if (e.key === "Backspace") {
+      if (passphrase.length <= 1) {
+        setCadence(0);
+        intervals.current = [];
+        lastKeyTime.current = null;
+      } else if (intervals.current.length > 0) {
+        intervals.current.pop();
+        if (intervals.current.length > 0) {
+          const avg = intervals.current.reduce((a, b) => a + b, 0) / intervals.current.length;
+          setCadence(Math.round(avg));
+        } else {
+          setCadence(0);
+        }
+      }
+      lastKeyTime.current = now;
+      return;
+    }
+
+    if (e.key === "Enter") return;
+
+    if (lastKeyTime.current !== null) {
       const delta = now - lastKeyTime.current;
       intervals.current.push(delta);
       const avg = intervals.current.reduce((a, b) => a + b, 0) / intervals.current.length;
@@ -77,52 +177,99 @@ export default function App() {
     lastKeyTime.current = now;
   };
 
-  // Reset hourly security violations counter
-  const handleResetViolations = () => {
-    setViolations(0);
-    setTerminalLogs((prev) => [
-      ...prev,
-      `[ADMIN OVERRIDE] Security violation counter reset to 0.`
-    ]);
+  // ---------------------------------------------------------------------------
+  // FIX 2: REAL IN-BROWSER FILE UPLOAD & AES-256 LOCKING
+  // ---------------------------------------------------------------------------
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!registeredPassphrase) {
+      alert("Please configure an Enrolled Asset Secret Passphrase first!");
+      return;
+    }
+
+    try {
+      setTerminalLogs((prev) => [
+        ...prev,
+        `[VAULT ENCRYPT] Ingesting binary payload for: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+        `[CRYPTO] Deriving 256-bit key via PBKDF2-HMAC-SHA256 (100,000 rounds)...`,
+        `[CRYPTO] Applying AES-256-GCM with 96-bit unique IV & GCM auth tag...`
+      ]);
+
+      const buffer = await file.arrayBuffer();
+      const encryptedBytes = await encryptFileData(buffer, registeredPassphrase);
+
+      // Arm asset inside vault
+      const lockedName = `${file.name}.aegis`;
+      setActiveVaultFile({
+        originalName: file.name,
+        lockedName: lockedName,
+        encryptedBytes: encryptedBytes,
+        mimeType: file.type || "application/octet-stream"
+      });
+      setAsset(lockedName);
+      setUnlockedDownloadUrl(null);
+      setUnlockedFileName(null);
+
+      // Automatically trigger download of the encrypted .aegis binary
+      const blob = new Blob([encryptedBytes], { type: "application/octet-stream" });
+      const downloadLink = document.createElement("a");
+      downloadLink.href = URL.createObjectURL(blob);
+      downloadLink.download = lockedName;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+
+      setTerminalLogs((prev) => [
+        ...prev,
+        `[✓] ASSET LOCKED: Generated AES-256 vault container -> ${lockedName}`,
+        `[VAULT READY] Target asset armed on disk and held in browser memory.`
+      ]);
+    } catch (err) {
+      console.error("Encryption error:", err);
+      setTerminalLogs((prev) => [...prev, `[CRYPTO ERROR] Failed to lock asset: ${err.message}`]);
+    }
   };
 
-  // Submit challenge evaluation to the AI Gateway
+  const handleResetViolations = () => {
+    setViolations(0);
+    setTerminalLogs((prev) => [...prev, `[ADMIN OVERRIDE] Security violation counter reset to 0.`]);
+  };
+
+  // ---------------------------------------------------------------------------
+  // FIX 3: TWO-TIER EVALUATION WITH REAL AES-256 DECRYPTION
+  // ---------------------------------------------------------------------------
   const handleEvaluate = async (e) => {
     e.preventDefault();
     if (!passphrase) return;
 
     setIsEvaluating(true);
+    setUnlockedDownloadUrl(null);
+    setUnlockedFileName(null);
 
-    // =========================================================================
-    // TIER 1: KNOWLEDGE VERIFICATION (Dynamic Passphrase String Check)
-    // =========================================================================
+    // Tier 1: Dynamic Passphrase Check
     if (passphrase.trim() !== registeredPassphrase.trim()) {
       const updatedViolations = violations + 1;
       setViolations(updatedViolations);
-      
-      setLatestVerdict({
-        decision: "DENIED",
-        risk_score_percent: 98.5,
-        reason: "Credential mismatch"
-      });
+      setLatestVerdict({ decision: "DENIED", risk_score_percent: 98.5 });
 
       setTerminalLogs((prev) => [
         ...prev,
         `[TIER 1 FAILED] Invalid passphrase string provided for principal: ${identity}`,
         `[SECURITY INCIDENT] Violation counter incremented to: ${updatedViolations}`,
-        `[POLICY DECISION: DENIED] Credential does not match enrolled asset key. Request dropped.`
+        `[POLICY DECISION: DENIED] Request dropped prior to AI inference. Asset remains encrypted.`
       ]);
 
       setIsEvaluating(false);
       setPassphrase("");
+      setCadence(0);
       intervals.current = [];
       lastKeyTime.current = null;
       return;
     }
 
-    // =========================================================================
-    // TIER 2: ZERO TRUST BEHAVIORAL AI (Biometrics & Context Analysis)
-    // =========================================================================
+    // Tier 2: Zero Trust Behavioral Biometrics
     const measuredCadence = cadence === 0 ? 210.5 : cadence;
 
     setTerminalLogs((prev) => [
@@ -153,15 +300,56 @@ export default function App() {
       if (result.decision === "GRANTED") {
         setTerminalLogs((prev) => [
           ...prev,
-          `[EVALUATION CLEAR] Threat Probability: ${result.risk_score_percent}% (Below 60% Policy Threshold)`,
+          `[EVALUATION CLEAR] Threat Probability: ${result.risk_score_percent}% (Below 60% Threshold)`,
           `[POLICY DECISION: GRANTED] Session token issued: ${result.session_token}`,
           `[WEB3 AUDIT] Block commitment hash: ${result.tx_hash}`
         ]);
+
+        // Decrypt uploaded file if armed in browser vault
+        if (activeVaultFile) {
+          try {
+            setTerminalLogs((prev) => [
+              ...prev,
+              `[DECRYPTING] Authenticating AES-256-GCM tag and restoring cleartext bytes...`
+            ]);
+            const decryptedBytes = await decryptFileData(activeVaultFile.encryptedBytes, passphrase);
+            const decryptedBlob = new Blob([decryptedBytes], { type: activeVaultFile.mimeType });
+            const fileUrl = URL.createObjectURL(decryptedBlob);
+
+            setUnlockedDownloadUrl(fileUrl);
+            setUnlockedFileName(activeVaultFile.originalName);
+
+            // Trigger instant download of unlocked original file
+            const autoLink = document.createElement("a");
+            autoLink.href = fileUrl;
+            autoLink.download = activeVaultFile.originalName;
+            document.body.appendChild(autoLink);
+            autoLink.click();
+            document.body.removeChild(autoLink);
+
+            setTerminalLogs((prev) => [
+              ...prev,
+              `[✓] ZTNA PERIMETER CLEAR: Decrypted ${activeVaultFile.originalName} into memory!`,
+              `[✓] File automatically restored and downloaded to client desktop.`
+            ]);
+          } catch (decErr) {
+            setTerminalLogs((prev) => [...prev, `[CRYPTO FAILED] Integrity tag mismatch: ${decErr.message}`]);
+          }
+        } else {
+          // Demo fallback for default simulated asset
+          const defaultBlob = new Blob([
+            "CONFIDENTIAL ENTERPRISE AUDIT REPORT 2026\nStatus: AES-256-GCM Decryption Authenticated via Aegis ZTNA."
+          ], { type: "text/plain" });
+          const fileUrl = URL.createObjectURL(defaultBlob);
+          setUnlockedDownloadUrl(fileUrl);
+          setUnlockedFileName("Confidential_Enterprise_Report.txt");
+        }
       } else {
         setTerminalLogs((prev) => [
           ...prev,
           `[ZERO TRUST BREACH] Passphrase was CORRECT, but typing cadence (${measuredCadence}ms) is anomalous!`,
           `[POLICY DECISION: DENIED] Threat Probability: ${result.risk_score_percent}% (Exceeds Policy Limit)`,
+          `[SECURITY ENFORCEMENT] Target asset remains AES-256 encrypted on disk.`,
           `[WEB3 AUDIT] Tamper-proof incident hash written: ${result.tx_hash}`
         ]);
       }
@@ -172,6 +360,7 @@ export default function App() {
     } finally {
       setIsEvaluating(false);
       setPassphrase("");
+      setCadence(0);
       intervals.current = [];
       lastKeyTime.current = null;
     }
@@ -179,7 +368,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#060913] text-slate-200 p-4 md:p-8 selection:bg-blue-600 selection:text-white">
-      {/* Header */}
+      {/* Top Navigation */}
       <header className="flex flex-col md:flex-row items-start md:items-center justify-between pb-6 border-b border-slate-800 gap-4">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-blue-600/20 border border-blue-500/30 rounded-xl text-blue-400 shadow-inner">
@@ -210,7 +399,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Grid matching Figure 6.2.1 */}
+      {/* Main Grid */}
       <main className="grid grid-cols-1 lg:grid-cols-12 gap-6 my-6">
         {/* Left Column: Contextual Security Signals */}
         <section className="lg:col-span-6 bg-[#0d1322] border border-slate-800 rounded-xl p-6 shadow-2xl relative overflow-hidden">
@@ -232,30 +421,48 @@ export default function App() {
                 type="text"
                 value={identity}
                 onChange={(e) => setIdentity(e.target.value)}
-                className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono transition-colors"
+                className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono"
                 required
               />
             </div>
 
+            {/* PROTECTED ASSET & FILE UPLOAD */}
             <div>
               <div className="flex justify-between items-center mb-1.5">
                 <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                   Protected Enterprise Target Asset
                 </label>
-                <span className="text-[11px] text-blue-400 hover:text-blue-300 cursor-pointer flex items-center gap-1">
-                  <FileText className="w-3 h-3" /> Upload File to Vault
-                </span>
+                {/* Hidden File Input */}
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                  className="text-[11px] text-cyan-400 hover:text-cyan-300 font-medium cursor-pointer flex items-center gap-1 transition-colors"
+                >
+                  <Upload className="w-3.5 h-3.5" /> Upload File to Vault (AES Lock)
+                </button>
               </div>
               <input
                 type="text"
                 value={asset}
                 onChange={(e) => setAsset(e.target.value)}
-                className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono transition-colors"
+                className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono"
                 required
               />
+              {activeVaultFile && (
+                <div className="mt-1 text-[11px] font-mono text-emerald-400 flex items-center gap-1.5">
+                  <FileCheck className="w-3.5 h-3.5" />
+                  Locked: <span className="underline">{activeVaultFile.lockedName}</span> (AES-256 Container Armed)
+                </div>
+              )}
             </div>
 
-            {/* DYNAMIC PASSPHRASE ENROLLMENT FIELD */}
+            {/* DYNAMIC SECRET PASSPHRASE FIELD */}
             <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-800">
               <div className="flex justify-between items-center mb-1">
                 <label className="text-xs font-medium text-cyan-400 flex items-center gap-1.5 uppercase tracking-wider">
@@ -274,13 +481,10 @@ export default function App() {
                 type={showRegisteredPass ? "text" : "password"}
                 value={registeredPassphrase}
                 onChange={(e) => setRegisteredPassphrase(e.target.value)}
-                placeholder="Set whatever secret passphrase you want..."
+                placeholder="Set secret passphrase for file locking..."
                 className="w-full bg-[#070b14] border border-cyan-900/60 rounded-lg px-3 py-2 text-sm text-cyan-200 focus:outline-none focus:border-cyan-500 font-mono tracking-wider"
                 required
               />
-              <p className="text-[11px] text-slate-500 mt-1">
-                Change this value anytime to simulate custom organizational secrets.
-              </p>
             </div>
 
             {/* LIVE BIOMETRIC CHALLENGE INPUT */}
@@ -303,13 +507,15 @@ export default function App() {
                 placeholder={`Type '${registeredPassphrase}' to capture live typing cadence...`}
                 value={passphrase}
                 onKeyDown={handleKeyDown}
-                onChange={(e) => setPassphrase(e.target.value)}
-                className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono tracking-widest transition-colors"
+                onChange={handlePassphraseChange}
+                className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono tracking-widest"
                 required
               />
               <div className="flex justify-between items-center mt-1.5 text-xs">
                 <span className="text-slate-400">Calculated Typing Cadence:</span>
-                <span className="font-mono text-cyan-400 font-semibold">{cadence} ms</span>
+                <span className={`font-mono font-semibold ${cadence === 0 ? "text-slate-500" : "text-cyan-400"}`}>
+                  {cadence} ms
+                </span>
               </div>
             </div>
 
@@ -324,7 +530,7 @@ export default function App() {
                   max="23"
                   value={accessHour}
                   onChange={(e) => setAccessHour(e.target.value)}
-                  className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono transition-colors"
+                  className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono"
                 />
               </div>
               <div>
@@ -347,7 +553,7 @@ export default function App() {
                   min="0"
                   value={violations}
                   onChange={(e) => setViolations(e.target.value)}
-                  className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono transition-colors"
+                  className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono"
                 />
               </div>
             </div>
@@ -363,6 +569,23 @@ export default function App() {
             >
               {isEvaluating ? "EVALUATING THREAT PARAMETERS..." : "TRANSMIT TELEMETRY CHALLENGE"}
             </button>
+
+            {/* UNLOCKED FILE DOWNLOAD BADGE */}
+            {unlockedDownloadUrl && (
+              <div className="mt-3 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-mono text-emerald-300">
+                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+                  <span>Decrypted: <strong>{unlockedFileName}</strong></span>
+                </div>
+                <a
+                  href={unlockedDownloadUrl}
+                  download={unlockedFileName}
+                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded flex items-center gap-1 transition-colors"
+                >
+                  <Download className="w-3 h-3" /> Save File
+                </a>
+              </div>
+            )}
           </form>
         </section>
 
@@ -395,9 +618,9 @@ export default function App() {
                 className={`leading-relaxed ${
                   log.includes("ALERT") || log.includes("DENIED") || log.includes("FAILED") || log.includes("INCIDENT")
                     ? "text-rose-400"
-                    : log.includes("CLEAR") || log.includes("GRANTED") || log.includes("PASS")
+                    : log.includes("CLEAR") || log.includes("GRANTED") || log.includes("LOCKED")
                     ? "text-emerald-400"
-                    : log.includes("INGEST") || log.includes("AI") || log.includes("TELEMETRY")
+                    : log.includes("INGEST") || log.includes("AI") || log.includes("CRYPTO")
                     ? "text-cyan-400"
                     : "text-slate-400"
                 }`}
@@ -414,7 +637,7 @@ export default function App() {
         </section>
       </main>
 
-      {/* Bottom Section: Decentralized Vault Audit Trail (Polygon Blockchain Ledger) */}
+      {/* Bottom Section: Decentralized Vault Audit Trail */}
       <section className="bg-[#0d1322] border border-slate-800 rounded-xl p-6 shadow-2xl">
         <div className="flex items-center justify-between pb-4 mb-4 border-b border-slate-800">
           <div className="flex items-center gap-2">
@@ -456,11 +679,7 @@ export default function App() {
                     <td className="py-3 px-3 text-slate-300">{row.target_resource}</td>
                     <td className="py-3 px-3 text-cyan-400">{row.cadence_ms} ms</td>
                     <td className="py-3 px-3 font-semibold">
-                      <span
-                        className={
-                          row.risk_score_percent >= 60.0 ? "text-rose-400" : "text-emerald-400"
-                        }
-                      >
+                      <span className={row.risk_score_percent >= 60.0 ? "text-rose-400" : "text-emerald-400"}>
                         {row.risk_score_percent}%
                       </span>
                     </td>
