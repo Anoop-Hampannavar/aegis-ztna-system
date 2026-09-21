@@ -13,8 +13,9 @@ import {
   EyeOff, 
   RotateCcw, 
   FolderLock, 
-  FileCheck, 
-  Unlock 
+  Unlock,
+  Download,
+  FileCheck
 } from 'lucide-react';
 
 const BACKEND_URL = "https://aegis-ztna-system.onrender.com";
@@ -26,7 +27,7 @@ async function deriveKey(passphrase, salt) {
   const enc = new TextEncoder();
   const keyMaterial = await window.crypto.subtle.importKey(
     "raw",
-    enc.encode(passphrase),
+    enc.encode(passphrase.trim()),
     { name: "PBKDF2" },
     false,
     ["deriveKey"]
@@ -79,11 +80,11 @@ export default function App() {
   const [identity, setIdentity] = useState("sanjana@enterprise.com");
   const [asset, setAsset] = useState("Confidential_Enterprise_Report.txt");
   
-  // Dynamic Passphrase Configuration
+  // Passphrase Configuration
   const [registeredPassphrase, setRegisteredPassphrase] = useState("MySecureKey123");
   const [showRegisteredPass, setShowRegisteredPass] = useState(false);
   
-  // Biometric Challenge Input
+  // Challenge State
   const [passphrase, setPassphrase] = useState("");
   const [showChallengePass, setShowChallengePass] = useState(false);
   
@@ -92,16 +93,18 @@ export default function App() {
   const [violations, setViolations] = useState(0);
   const [isEvaluating, setIsEvaluating] = useState(false);
   
-  // Local File System In-Place Handle
+  // Local File System State
   const [isLockedInPlace, setIsLockedInPlace] = useState(false);
   const [isRestoredInPlace, setIsRestoredInPlace] = useState(false);
+  const [grantedForUnlock, setGrantedForUnlock] = useState(false);
+  const [verifiedPassphrase, setVerifiedPassphrase] = useState("");
   const diskFileHandleRef = useRef(null);
 
   const [terminalLogs, setTerminalLogs] = useState([
     "[SYSTEM BOOT] Aegis ZTNA Autonomous Controller v1.0.0 Online.",
     "[AI ENGINE] Isolation Forest baseline profile loaded (Contamination: 8%).",
     "[WEB3] Polygon Amoy contract listener initialized at 0x4a96...01d0.",
-    "[DISK SYSTEM] Direct in-place folder encryption subsystem ready.",
+    "[DISK SYSTEM] Zero Trust In-Place Disk Engine Ready.",
     "Awaiting challenge request initialization..."
   ]);
   const [auditTrail, setAuditTrail] = useState([]);
@@ -128,9 +131,7 @@ export default function App() {
     return () => clearInterval(pollInterval);
   }, []);
 
-  // ---------------------------------------------------------------------------
-  // KEYSTROKE CADENCE MEASUREMENT WITH CLEAN BACKSPACE RESET
-  // ---------------------------------------------------------------------------
+  // Backspace-resettable keystroke measurement
   const handlePassphraseChange = (e) => {
     const val = e.target.value;
     setPassphrase(val);
@@ -174,9 +175,7 @@ export default function App() {
     lastKeyTime.current = now;
   };
 
-  // ---------------------------------------------------------------------------
-  // DIRECT IN-PLACE DISK LOCKING (Chromium File System Access API)
-  // ---------------------------------------------------------------------------
+  // 1. Direct Lock in Folder
   const handleDirectDiskLock = async () => {
     if (!registeredPassphrase) {
       alert("Please enter an Enrolled Asset Secret Passphrase first!");
@@ -184,28 +183,24 @@ export default function App() {
     }
 
     if (!window.showOpenFilePicker) {
-      alert("Direct in-place disk editing requires Google Chrome or Microsoft Edge.");
+      alert("Direct in-place disk locking requires Google Chrome or Microsoft Edge.");
       return;
     }
 
     try {
-      // 1. User picks file directly from local Windows folder
       const [fileHandle] = await window.showOpenFilePicker();
       diskFileHandleRef.current = fileHandle;
       const file = await fileHandle.getFile();
 
       setTerminalLogs((prev) => [
         ...prev,
-        `[DISK ACCESS] Acquired system handle for local file: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
-        `[CRYPTO] Deriving 256-bit AES key via PBKDF2-HMAC-SHA256 from '${registeredPassphrase}'...`,
-        `[LOCKING] Overwriting file contents directly in your folder with AES-256-GCM ciphertext...`
+        `[DISK ACCESS] Acquired file handle for: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+        `[CRYPTO] Encrypting with AES-256-GCM using enrolled passphrase...`
       ]);
 
-      // 2. Read plain file bytes and encrypt
       const buffer = await file.arrayBuffer();
       const encryptedBytes = await encryptFileData(buffer, registeredPassphrase);
 
-      // 3. Write directly into the existing file on disk in-place
       const writable = await fileHandle.createWritable();
       await writable.write(encryptedBytes);
       await writable.close();
@@ -213,11 +208,12 @@ export default function App() {
       setAsset(file.name);
       setIsLockedInPlace(true);
       setIsRestoredInPlace(false);
+      setGrantedForUnlock(false);
 
       setTerminalLogs((prev) => [
         ...prev,
-        `[✓] ASSET LOCKED IN PLACE: '${file.name}' is now encrypted in your folder!`,
-        `[SECURITY NOTICE] Opening this file via Word, Acrobat, or Notepad will fail until ZTNA clearance.`
+        `[✓] ASSET LOCKED IN PLACE: '${file.name}' is now encrypted on disk!`,
+        `[SECURITY LOCK] File contents overwritten with AES-256 binary. Cannot be opened until ZTNA clearance.`
       ]);
     } catch (err) {
       if (err.name !== "AbortError") {
@@ -226,19 +222,70 @@ export default function App() {
     }
   };
 
+  // 2. Direct Unlock Action with Fresh User Gesture (Bypasses Chrome Timeout)
+  const handlePerformDiskRestore = async () => {
+    const keyToUse = verifiedPassphrase || registeredPassphrase;
+    if (!keyToUse) {
+      alert("Missing decryption key.");
+      return;
+    }
+
+    try {
+      let handle = diskFileHandleRef.current;
+      
+      // If handle was cleared or refreshed, prompt user to pick the locked file
+      if (!handle) {
+        const [picked] = await window.showOpenFilePicker();
+        handle = picked;
+        diskFileHandleRef.current = picked;
+      }
+
+      const lockedFile = await handle.getFile();
+      setTerminalLogs((prev) => [
+        ...prev,
+        `[USER GESTURE CONFIRMED] Reading encrypted bytes from '${lockedFile.name}'...`,
+        `[CRYPTO] Authenticating AES-256-GCM tag and restoring cleartext bytes...`
+      ]);
+
+      const lockedBytes = await lockedFile.arrayBuffer();
+      const decryptedBytes = await decryptFileData(lockedBytes, keyToUse);
+
+      const writable = await handle.createWritable();
+      await writable.write(decryptedBytes);
+      await writable.close();
+
+      setIsRestoredInPlace(true);
+      setIsLockedInPlace(false);
+      setGrantedForUnlock(false);
+
+      setTerminalLogs((prev) => [
+        ...prev,
+        `[✓] SUCCESS: '${lockedFile.name}' fully restored and decrypted in place!`,
+        `[✓] You can now open the file normally from Windows Explorer.`
+      ]);
+      alert(`Success! '${lockedFile.name}' has been unlocked and restored in your folder.`);
+    } catch (decErr) {
+      console.error(decErr);
+      setTerminalLogs((prev) => [
+        ...prev,
+        `[CRYPTO FAILED] Decryption tag mismatch. Ensure passphrase matches the locking key: ${decErr.message}`
+      ]);
+      alert(`Decryption failed: Check if passphrase matches the one used during lock.`);
+    }
+  };
+
   const handleResetViolations = () => {
     setViolations(0);
     setTerminalLogs((prev) => [...prev, `[ADMIN OVERRIDE] Security violation counter reset to 0.`]);
   };
 
-  // ---------------------------------------------------------------------------
-  // TWO-TIER EVALUATION WITH DIRECT IN-PLACE RESTORATION
-  // ---------------------------------------------------------------------------
+  // 3. Telemetry Evaluation
   const handleEvaluate = async (e) => {
     e.preventDefault();
     if (!passphrase) return;
 
     setIsEvaluating(true);
+    setGrantedForUnlock(false);
 
     // Tier 1: Passphrase Verification
     if (passphrase.trim() !== registeredPassphrase.trim()) {
@@ -261,14 +308,14 @@ export default function App() {
       return;
     }
 
-    // Tier 2: Zero Trust Biometrics & Anomaly Evaluation
+    // Tier 2: Zero Trust Biometrics
     const measuredCadence = cadence === 0 ? 210.5 : cadence;
 
     setTerminalLogs((prev) => [
       ...prev,
-      `[TIER 1 CLEAR] Passphrase string matched enrolled asset key for ${identity}.`,
-      `[INGEST] Telemetry Vector -> Cadence: ${measuredCadence}ms | Access Hour: ${accessHour}:00 | Violations: ${violations}`,
-      `[AI INFERENCE] Running multi-vector observation through Isolation Forest decision trees...`
+      `[TIER 1 CLEAR] Passphrase string authenticated for ${identity}.`,
+      `[INGEST] Telemetry -> Cadence: ${measuredCadence}ms | Hour: ${accessHour}:00 | Violations: ${violations}`,
+      `[AI INFERENCE] Running vector through Isolation Forest decision trees...`
     ]);
 
     try {
@@ -290,47 +337,22 @@ export default function App() {
       setLatestVerdict(result);
 
       if (result.decision === "GRANTED") {
+        setVerifiedPassphrase(passphrase.trim());
+        setGrantedForUnlock(true);
+
         setTerminalLogs((prev) => [
           ...prev,
-          `[EVALUATION CLEAR] Threat Probability: ${result.risk_score_percent}% (Below 60% Policy Threshold)`,
+          `[EVALUATION CLEAR] Threat Probability: ${result.risk_score_percent}% (Below 60% Policy Limit)`,
           `[POLICY DECISION: GRANTED] Session token issued: ${result.session_token}`,
-          `[WEB3 AUDIT] Block commitment hash: ${result.tx_hash}`
+          `[WEB3 AUDIT] Block commitment hash: ${result.tx_hash}`,
+          `[ZTNA AUTHORIZED] Perimeter open: Click the green unlock button below to rewrite file to disk!`
         ]);
-
-        // RESTORE LOCAL FILE IN PLACE IN THE USER'S FOLDER
-        if (diskFileHandleRef.current) {
-          try {
-            setTerminalLogs((prev) => [
-              ...prev,
-              `[DISK ACCESS] Restoring cleartext bytes directly into your local folder...`
-            ]);
-
-            const lockedFile = await diskFileHandleRef.current.getFile();
-            const lockedBytes = await lockedFile.arrayBuffer();
-            const decryptedBytes = await decryptFileData(lockedBytes, passphrase);
-
-            const writable = await diskFileHandleRef.current.createWritable();
-            await writable.write(decryptedBytes);
-            await writable.close();
-
-            setIsRestoredInPlace(true);
-            setIsLockedInPlace(false);
-
-            setTerminalLogs((prev) => [
-              ...prev,
-              `[✓] ZTNA PERIMETER CLEAR: Local file '${lockedFile.name}' restored in place on your hard drive!`,
-              `[✓] File is now readable and can be opened normally.`
-            ]);
-          } catch (decErr) {
-            setTerminalLogs((prev) => [...prev, `[CRYPTO FAILED] Decryption error: ${decErr.message}`]);
-          }
-        }
       } else {
         setTerminalLogs((prev) => [
           ...prev,
           `[ZERO TRUST BREACH] Passphrase was CORRECT, but typing cadence (${measuredCadence}ms) is anomalous!`,
           `[POLICY DECISION: DENIED] Threat Probability: ${result.risk_score_percent}% (Exceeds Policy Limit)`,
-          `[SECURITY ENFORCEMENT] Target asset remains encrypted in your folder.`,
+          `[SECURITY ENFORCEMENT] Target asset remains locked on disk.`,
           `[WEB3 AUDIT] Tamper-proof incident hash written: ${result.tx_hash}`
         ]);
       }
@@ -349,7 +371,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#060913] text-slate-200 p-4 md:p-8 selection:bg-blue-600 selection:text-white">
-      {/* Top Navigation Bar */}
+      {/* Header */}
       <header className="flex flex-col md:flex-row items-start md:items-center justify-between pb-6 border-b border-slate-800 gap-4">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-blue-600/20 border border-blue-500/30 rounded-xl text-blue-400 shadow-inner">
@@ -407,7 +429,7 @@ export default function App() {
               />
             </div>
 
-            {/* PROTECTED ASSET & DIRECT DISK LOCK ACTION */}
+            {/* PROTECTED ASSET & LOCK IN PLACE */}
             <div>
               <div className="flex justify-between items-center mb-1.5">
                 <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
@@ -418,7 +440,7 @@ export default function App() {
                   onClick={handleDirectDiskLock}
                   className="text-[11px] text-cyan-400 hover:text-cyan-300 font-medium cursor-pointer flex items-center gap-1 transition-colors"
                 >
-                  <FolderLock className="w-3.5 h-3.5" /> Lock Local File in Folder (In-Place AES)
+                  <FolderLock className="w-3.5 h-3.5" /> Lock File in Folder (In-Place AES)
                 </button>
               </div>
               <input
@@ -442,7 +464,7 @@ export default function App() {
               )}
             </div>
 
-            {/* DYNAMIC SECRET PASSPHRASE FIELD */}
+            {/* DYNAMIC SECRET PASSPHRASE */}
             <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-800">
               <div className="flex justify-between items-center mb-1">
                 <label className="text-xs font-medium text-cyan-400 flex items-center gap-1.5 uppercase tracking-wider">
@@ -484,7 +506,7 @@ export default function App() {
               </div>
               <input
                 type={showChallengePass ? "text" : "password"}
-                placeholder={`Type '${registeredPassphrase}' to capture live typing cadence...`}
+                placeholder={`Type '${registeredPassphrase}' to capture live cadence...`}
                 value={passphrase}
                 onKeyDown={handleKeyDown}
                 onChange={handlePassphraseChange}
@@ -549,10 +571,30 @@ export default function App() {
             >
               {isEvaluating ? "EVALUATING THREAT PARAMETERS..." : "TRANSMIT TELEMETRY CHALLENGE"}
             </button>
+
+            {/* DIRECT WRITE TO DISK BUTTON (ACTIVE USER GESTURE - NEVER BLOCKED BY BROWSER) */}
+            {grantedForUnlock && (
+              <div className="mt-4 p-4 bg-emerald-500/10 border-2 border-emerald-500/50 rounded-xl animate-pulse">
+                <div className="flex items-center gap-2 mb-2 text-emerald-400 text-sm font-bold">
+                  <CheckCircle className="w-5 h-5" />
+                  <span>ZTNA CLEARANCE GRANTED: Ready to Decrypt</span>
+                </div>
+                <p className="text-xs text-slate-300 mb-3">
+                  Click the button below to rewrite the cleartext file back to your hard drive directly.
+                </p>
+                <button
+                  type="button"
+                  onClick={handlePerformDiskRestore}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-lg flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 transition-all cursor-pointer"
+                >
+                  <Unlock className="w-4 h-4" /> WRITE DECRYPTED FILE DIRECTLY TO DISK
+                </button>
+              </div>
+            )}
           </form>
         </section>
 
-        {/* Right Column: AI Engine Interception Terminal */}
+        {/* Right Column: AI Terminal */}
         <section className="lg:col-span-6 bg-[#070b14] border border-slate-800 rounded-xl p-6 flex flex-col font-mono shadow-2xl relative">
           <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-800">
             <div className="flex items-center gap-2">
@@ -581,7 +623,7 @@ export default function App() {
                 className={`leading-relaxed ${
                   log.includes("ALERT") || log.includes("DENIED") || log.includes("FAILED") || log.includes("INCIDENT")
                     ? "text-rose-400"
-                    : log.includes("CLEAR") || log.includes("GRANTED") || log.includes("LOCKED")
+                    : log.includes("CLEAR") || log.includes("GRANTED") || log.includes("LOCKED") || log.includes("SUCCESS")
                     ? "text-emerald-400"
                     : log.includes("INGEST") || log.includes("AI") || log.includes("CRYPTO") || log.includes("DISK")
                     ? "text-cyan-400"
@@ -683,4 +725,3 @@ export default function App() {
     </div>
   );
 }
-
