@@ -9,19 +9,18 @@ import {
   ExternalLink, 
   Cpu, 
   KeyRound, 
-  FileText,
-  Eye,
-  EyeOff,
-  RotateCcw,
-  Upload,
-  Download,
-  FileCheck
+  Eye, 
+  EyeOff, 
+  RotateCcw, 
+  FolderLock, 
+  FileCheck, 
+  Unlock 
 } from 'lucide-react';
 
 const BACKEND_URL = "https://aegis-ztna-system.onrender.com";
 
 // =============================================================================
-// BROWSER-NATIVE AES-256-GCM CRYPTOGRAPHIC ROUTINES (Web Crypto API)
+// BROWSER-NATIVE AES-256-GCM CRYPTOGRAPHIC ENGINE (Web Crypto API)
 // =============================================================================
 async function deriveKey(passphrase, salt) {
   const enc = new TextEncoder();
@@ -80,11 +79,11 @@ export default function App() {
   const [identity, setIdentity] = useState("sanjana@enterprise.com");
   const [asset, setAsset] = useState("Confidential_Enterprise_Report.txt");
   
-  // Custom Dynamic Passphrase Enrollment
+  // Dynamic Passphrase Configuration
   const [registeredPassphrase, setRegisteredPassphrase] = useState("MySecureKey123");
   const [showRegisteredPass, setShowRegisteredPass] = useState(false);
   
-  // Challenge input state
+  // Biometric Challenge Input
   const [passphrase, setPassphrase] = useState("");
   const [showChallengePass, setShowChallengePass] = useState(false);
   
@@ -93,17 +92,16 @@ export default function App() {
   const [violations, setViolations] = useState(0);
   const [isEvaluating, setIsEvaluating] = useState(false);
   
-  // Vault File State
-  const [activeVaultFile, setActiveVaultFile] = useState(null);
-  const [unlockedDownloadUrl, setUnlockedDownloadUrl] = useState(null);
-  const [unlockedFileName, setUnlockedFileName] = useState(null);
-  const fileInputRef = useRef(null);
+  // Local File System In-Place Handle
+  const [isLockedInPlace, setIsLockedInPlace] = useState(false);
+  const [isRestoredInPlace, setIsRestoredInPlace] = useState(false);
+  const diskFileHandleRef = useRef(null);
 
   const [terminalLogs, setTerminalLogs] = useState([
     "[SYSTEM BOOT] Aegis ZTNA Autonomous Controller v1.0.0 Online.",
     "[AI ENGINE] Isolation Forest baseline profile loaded (Contamination: 8%).",
     "[WEB3] Polygon Amoy contract listener initialized at 0x4a96...01d0.",
-    "[SECURITY POLICY] Browser-native AES-256-GCM vault subsystem ready.",
+    "[DISK SYSTEM] Direct in-place folder encryption subsystem ready.",
     "Awaiting challenge request initialization..."
   ]);
   const [auditTrail, setAuditTrail] = useState([]);
@@ -131,13 +129,12 @@ export default function App() {
   }, []);
 
   // ---------------------------------------------------------------------------
-  // FIX 1: KEYSTROKE CAPTURE WITH CLEAN BACKSPACE RESET
+  // KEYSTROKE CADENCE MEASUREMENT WITH CLEAN BACKSPACE RESET
   // ---------------------------------------------------------------------------
   const handlePassphraseChange = (e) => {
     const val = e.target.value;
     setPassphrase(val);
 
-    // If user cleared the input with backspaces, immediately reset cadence to 0
     if (!val || val.length === 0) {
       setCadence(0);
       intervals.current = [];
@@ -178,57 +175,54 @@ export default function App() {
   };
 
   // ---------------------------------------------------------------------------
-  // FIX 2: REAL IN-BROWSER FILE UPLOAD & AES-256 LOCKING
+  // DIRECT IN-PLACE DISK LOCKING (Chromium File System Access API)
   // ---------------------------------------------------------------------------
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
+  const handleDirectDiskLock = async () => {
     if (!registeredPassphrase) {
-      alert("Please configure an Enrolled Asset Secret Passphrase first!");
+      alert("Please enter an Enrolled Asset Secret Passphrase first!");
+      return;
+    }
+
+    if (!window.showOpenFilePicker) {
+      alert("Direct in-place disk editing requires Google Chrome or Microsoft Edge.");
       return;
     }
 
     try {
+      // 1. User picks file directly from local Windows folder
+      const [fileHandle] = await window.showOpenFilePicker();
+      diskFileHandleRef.current = fileHandle;
+      const file = await fileHandle.getFile();
+
       setTerminalLogs((prev) => [
         ...prev,
-        `[VAULT ENCRYPT] Ingesting binary payload for: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
-        `[CRYPTO] Deriving 256-bit key via PBKDF2-HMAC-SHA256 (100,000 rounds)...`,
-        `[CRYPTO] Applying AES-256-GCM with 96-bit unique IV & GCM auth tag...`
+        `[DISK ACCESS] Acquired system handle for local file: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+        `[CRYPTO] Deriving 256-bit AES key via PBKDF2-HMAC-SHA256 from '${registeredPassphrase}'...`,
+        `[LOCKING] Overwriting file contents directly in your folder with AES-256-GCM ciphertext...`
       ]);
 
+      // 2. Read plain file bytes and encrypt
       const buffer = await file.arrayBuffer();
       const encryptedBytes = await encryptFileData(buffer, registeredPassphrase);
 
-      // Arm asset inside vault
-      const lockedName = `${file.name}.aegis`;
-      setActiveVaultFile({
-        originalName: file.name,
-        lockedName: lockedName,
-        encryptedBytes: encryptedBytes,
-        mimeType: file.type || "application/octet-stream"
-      });
-      setAsset(lockedName);
-      setUnlockedDownloadUrl(null);
-      setUnlockedFileName(null);
+      // 3. Write directly into the existing file on disk in-place
+      const writable = await fileHandle.createWritable();
+      await writable.write(encryptedBytes);
+      await writable.close();
 
-      // Automatically trigger download of the encrypted .aegis binary
-      const blob = new Blob([encryptedBytes], { type: "application/octet-stream" });
-      const downloadLink = document.createElement("a");
-      downloadLink.href = URL.createObjectURL(blob);
-      downloadLink.download = lockedName;
-      document.body.appendChild(downloadLink);
-      downloadLink.click();
-      document.body.removeChild(downloadLink);
+      setAsset(file.name);
+      setIsLockedInPlace(true);
+      setIsRestoredInPlace(false);
 
       setTerminalLogs((prev) => [
         ...prev,
-        `[✓] ASSET LOCKED: Generated AES-256 vault container -> ${lockedName}`,
-        `[VAULT READY] Target asset armed on disk and held in browser memory.`
+        `[✓] ASSET LOCKED IN PLACE: '${file.name}' is now encrypted in your folder!`,
+        `[SECURITY NOTICE] Opening this file via Word, Acrobat, or Notepad will fail until ZTNA clearance.`
       ]);
     } catch (err) {
-      console.error("Encryption error:", err);
-      setTerminalLogs((prev) => [...prev, `[CRYPTO ERROR] Failed to lock asset: ${err.message}`]);
+      if (err.name !== "AbortError") {
+        setTerminalLogs((prev) => [...prev, `[DISK ERROR] Could not lock file: ${err.message}`]);
+      }
     }
   };
 
@@ -238,17 +232,15 @@ export default function App() {
   };
 
   // ---------------------------------------------------------------------------
-  // FIX 3: TWO-TIER EVALUATION WITH REAL AES-256 DECRYPTION
+  // TWO-TIER EVALUATION WITH DIRECT IN-PLACE RESTORATION
   // ---------------------------------------------------------------------------
   const handleEvaluate = async (e) => {
     e.preventDefault();
     if (!passphrase) return;
 
     setIsEvaluating(true);
-    setUnlockedDownloadUrl(null);
-    setUnlockedFileName(null);
 
-    // Tier 1: Dynamic Passphrase Check
+    // Tier 1: Passphrase Verification
     if (passphrase.trim() !== registeredPassphrase.trim()) {
       const updatedViolations = violations + 1;
       setViolations(updatedViolations);
@@ -258,7 +250,7 @@ export default function App() {
         ...prev,
         `[TIER 1 FAILED] Invalid passphrase string provided for principal: ${identity}`,
         `[SECURITY INCIDENT] Violation counter incremented to: ${updatedViolations}`,
-        `[POLICY DECISION: DENIED] Request dropped prior to AI inference. Asset remains encrypted.`
+        `[POLICY DECISION: DENIED] Request rejected prior to AI inference. File remains locked.`
       ]);
 
       setIsEvaluating(false);
@@ -269,7 +261,7 @@ export default function App() {
       return;
     }
 
-    // Tier 2: Zero Trust Behavioral Biometrics
+    // Tier 2: Zero Trust Biometrics & Anomaly Evaluation
     const measuredCadence = cadence === 0 ? 210.5 : cadence;
 
     setTerminalLogs((prev) => [
@@ -300,56 +292,45 @@ export default function App() {
       if (result.decision === "GRANTED") {
         setTerminalLogs((prev) => [
           ...prev,
-          `[EVALUATION CLEAR] Threat Probability: ${result.risk_score_percent}% (Below 60% Threshold)`,
+          `[EVALUATION CLEAR] Threat Probability: ${result.risk_score_percent}% (Below 60% Policy Threshold)`,
           `[POLICY DECISION: GRANTED] Session token issued: ${result.session_token}`,
           `[WEB3 AUDIT] Block commitment hash: ${result.tx_hash}`
         ]);
 
-        // Decrypt uploaded file if armed in browser vault
-        if (activeVaultFile) {
+        // RESTORE LOCAL FILE IN PLACE IN THE USER'S FOLDER
+        if (diskFileHandleRef.current) {
           try {
             setTerminalLogs((prev) => [
               ...prev,
-              `[DECRYPTING] Authenticating AES-256-GCM tag and restoring cleartext bytes...`
+              `[DISK ACCESS] Restoring cleartext bytes directly into your local folder...`
             ]);
-            const decryptedBytes = await decryptFileData(activeVaultFile.encryptedBytes, passphrase);
-            const decryptedBlob = new Blob([decryptedBytes], { type: activeVaultFile.mimeType });
-            const fileUrl = URL.createObjectURL(decryptedBlob);
 
-            setUnlockedDownloadUrl(fileUrl);
-            setUnlockedFileName(activeVaultFile.originalName);
+            const lockedFile = await diskFileHandleRef.current.getFile();
+            const lockedBytes = await lockedFile.arrayBuffer();
+            const decryptedBytes = await decryptFileData(lockedBytes, passphrase);
 
-            // Trigger instant download of unlocked original file
-            const autoLink = document.createElement("a");
-            autoLink.href = fileUrl;
-            autoLink.download = activeVaultFile.originalName;
-            document.body.appendChild(autoLink);
-            autoLink.click();
-            document.body.removeChild(autoLink);
+            const writable = await diskFileHandleRef.current.createWritable();
+            await writable.write(decryptedBytes);
+            await writable.close();
+
+            setIsRestoredInPlace(true);
+            setIsLockedInPlace(false);
 
             setTerminalLogs((prev) => [
               ...prev,
-              `[✓] ZTNA PERIMETER CLEAR: Decrypted ${activeVaultFile.originalName} into memory!`,
-              `[✓] File automatically restored and downloaded to client desktop.`
+              `[✓] ZTNA PERIMETER CLEAR: Local file '${lockedFile.name}' restored in place on your hard drive!`,
+              `[✓] File is now readable and can be opened normally.`
             ]);
           } catch (decErr) {
-            setTerminalLogs((prev) => [...prev, `[CRYPTO FAILED] Integrity tag mismatch: ${decErr.message}`]);
+            setTerminalLogs((prev) => [...prev, `[CRYPTO FAILED] Decryption error: ${decErr.message}`]);
           }
-        } else {
-          // Demo fallback for default simulated asset
-          const defaultBlob = new Blob([
-            "CONFIDENTIAL ENTERPRISE AUDIT REPORT 2026\nStatus: AES-256-GCM Decryption Authenticated via Aegis ZTNA."
-          ], { type: "text/plain" });
-          const fileUrl = URL.createObjectURL(defaultBlob);
-          setUnlockedDownloadUrl(fileUrl);
-          setUnlockedFileName("Confidential_Enterprise_Report.txt");
         }
       } else {
         setTerminalLogs((prev) => [
           ...prev,
           `[ZERO TRUST BREACH] Passphrase was CORRECT, but typing cadence (${measuredCadence}ms) is anomalous!`,
           `[POLICY DECISION: DENIED] Threat Probability: ${result.risk_score_percent}% (Exceeds Policy Limit)`,
-          `[SECURITY ENFORCEMENT] Target asset remains AES-256 encrypted on disk.`,
+          `[SECURITY ENFORCEMENT] Target asset remains encrypted in your folder.`,
           `[WEB3 AUDIT] Tamper-proof incident hash written: ${result.tx_hash}`
         ]);
       }
@@ -368,7 +349,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#060913] text-slate-200 p-4 md:p-8 selection:bg-blue-600 selection:text-white">
-      {/* Top Navigation */}
+      {/* Top Navigation Bar */}
       <header className="flex flex-col md:flex-row items-start md:items-center justify-between pb-6 border-b border-slate-800 gap-4">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-blue-600/20 border border-blue-500/30 rounded-xl text-blue-400 shadow-inner">
@@ -426,25 +407,18 @@ export default function App() {
               />
             </div>
 
-            {/* PROTECTED ASSET & FILE UPLOAD */}
+            {/* PROTECTED ASSET & DIRECT DISK LOCK ACTION */}
             <div>
               <div className="flex justify-between items-center mb-1.5">
                 <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                   Protected Enterprise Target Asset
                 </label>
-                {/* Hidden File Input */}
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                  onClick={handleDirectDiskLock}
                   className="text-[11px] text-cyan-400 hover:text-cyan-300 font-medium cursor-pointer flex items-center gap-1 transition-colors"
                 >
-                  <Upload className="w-3.5 h-3.5" /> Upload File to Vault (AES Lock)
+                  <FolderLock className="w-3.5 h-3.5" /> Lock Local File in Folder (In-Place AES)
                 </button>
               </div>
               <input
@@ -454,10 +428,16 @@ export default function App() {
                 className="w-full bg-[#070b14] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono"
                 required
               />
-              {activeVaultFile && (
-                <div className="mt-1 text-[11px] font-mono text-emerald-400 flex items-center gap-1.5">
-                  <FileCheck className="w-3.5 h-3.5" />
-                  Locked: <span className="underline">{activeVaultFile.lockedName}</span> (AES-256 Container Armed)
+              {isLockedInPlace && (
+                <div className="mt-1.5 text-[11px] font-mono text-rose-400 flex items-center gap-1.5 bg-rose-500/10 px-2.5 py-1 rounded border border-rose-500/20">
+                  <Lock className="w-3.5 h-3.5" />
+                  Locked In Folder: <strong>{asset}</strong> (Encrypted with AES-256)
+                </div>
+              )}
+              {isRestoredInPlace && (
+                <div className="mt-1.5 text-[11px] font-mono text-emerald-400 flex items-center gap-1.5 bg-emerald-500/10 px-2.5 py-1 rounded border border-emerald-500/20">
+                  <Unlock className="w-3.5 h-3.5" />
+                  Restored In Folder: <strong>{asset}</strong> (Decrypted and readable)
                 </div>
               )}
             </div>
@@ -569,23 +549,6 @@ export default function App() {
             >
               {isEvaluating ? "EVALUATING THREAT PARAMETERS..." : "TRANSMIT TELEMETRY CHALLENGE"}
             </button>
-
-            {/* UNLOCKED FILE DOWNLOAD BADGE */}
-            {unlockedDownloadUrl && (
-              <div className="mt-3 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg flex items-center justify-between">
-                <div className="flex items-center gap-2 text-xs font-mono text-emerald-300">
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  <span>Decrypted: <strong>{unlockedFileName}</strong></span>
-                </div>
-                <a
-                  href={unlockedDownloadUrl}
-                  download={unlockedFileName}
-                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded flex items-center gap-1 transition-colors"
-                >
-                  <Download className="w-3 h-3" /> Save File
-                </a>
-              </div>
-            )}
           </form>
         </section>
 
@@ -620,7 +583,7 @@ export default function App() {
                     ? "text-rose-400"
                     : log.includes("CLEAR") || log.includes("GRANTED") || log.includes("LOCKED")
                     ? "text-emerald-400"
-                    : log.includes("INGEST") || log.includes("AI") || log.includes("CRYPTO")
+                    : log.includes("INGEST") || log.includes("AI") || log.includes("CRYPTO") || log.includes("DISK")
                     ? "text-cyan-400"
                     : "text-slate-400"
                 }`}
@@ -720,3 +683,4 @@ export default function App() {
     </div>
   );
 }
+```[cite: 2]
