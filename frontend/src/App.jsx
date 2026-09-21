@@ -9,18 +9,26 @@ import {
   ExternalLink, 
   Cpu, 
   KeyRound, 
-  FileText 
+  FileText,
+  Eye,
+  EyeOff,
+  RotateCcw
 } from 'lucide-react';
 
 const BACKEND_URL = "https://aegis-ztna-system.onrender.com";
 
-// Registered enterprise secret passphrase for demonstration
-const REGISTERED_SECRET_PASSPHRASE = "Aegis@2026";
-
 export default function App() {
   const [identity, setIdentity] = useState("sanjana@enterprise.com");
   const [asset, setAsset] = useState("Confidential_Enterprise_Report.txt");
+  
+  // Dynamic passphrase state (user-defined on the fly)
+  const [registeredPassphrase, setRegisteredPassphrase] = useState("MySecureKey123");
+  const [showRegisteredPass, setShowRegisteredPass] = useState(false);
+  
+  // Challenge test passphrase state
   const [passphrase, setPassphrase] = useState("");
+  const [showChallengePass, setShowChallengePass] = useState(false);
+  
   const [cadence, setCadence] = useState(0);
   const [accessHour, setAccessHour] = useState(new Date().getHours());
   const [violations, setViolations] = useState(0);
@@ -29,7 +37,7 @@ export default function App() {
     "[SYSTEM BOOT] Aegis ZTNA Autonomous Controller v1.0.0 Online.",
     "[AI ENGINE] Isolation Forest baseline profile loaded (Contamination: 8%).",
     "[WEB3] Polygon Amoy contract listener initialized at 0x4a96...01d0.",
-    `[SECURITY POLICY] Registered asset credential armed for '${asset}'.`,
+    "[SECURITY POLICY] Dynamic asset credential enrollment ready.",
     "Awaiting challenge request initialization..."
   ]);
   const [auditTrail, setAuditTrail] = useState([]);
@@ -57,7 +65,7 @@ export default function App() {
     return () => clearInterval(pollInterval);
   }, []);
 
-  // Capture Inter-Key Timing (IKT) in milliseconds as user types
+  // Measure Inter-Key Timing (cadence in ms) in real time
   const handleKeyDown = (e) => {
     const now = performance.now();
     if (lastKeyTime.current !== null && e.key !== "Backspace" && e.key !== "Enter") {
@@ -69,6 +77,15 @@ export default function App() {
     lastKeyTime.current = now;
   };
 
+  // Reset hourly security violations counter
+  const handleResetViolations = () => {
+    setViolations(0);
+    setTerminalLogs((prev) => [
+      ...prev,
+      `[ADMIN OVERRIDE] Security violation counter reset to 0.`
+    ]);
+  };
+
   // Submit challenge evaluation to the AI Gateway
   const handleEvaluate = async (e) => {
     e.preventDefault();
@@ -77,24 +94,23 @@ export default function App() {
     setIsEvaluating(true);
 
     // =========================================================================
-    // TIER 1: KNOWLEDGE VERIFICATION (Passphrase String Check)
+    // TIER 1: KNOWLEDGE VERIFICATION (Dynamic Passphrase String Check)
     // =========================================================================
-    if (passphrase !== REGISTERED_SECRET_PASSPHRASE) {
+    if (passphrase.trim() !== registeredPassphrase.trim()) {
       const updatedViolations = violations + 1;
       setViolations(updatedViolations);
       
-      const deniedVerdict = {
+      setLatestVerdict({
         decision: "DENIED",
         risk_score_percent: 98.5,
         reason: "Credential mismatch"
-      };
-      setLatestVerdict(deniedVerdict);
+      });
 
       setTerminalLogs((prev) => [
         ...prev,
         `[TIER 1 FAILED] Invalid passphrase string provided for principal: ${identity}`,
         `[SECURITY INCIDENT] Violation counter incremented to: ${updatedViolations}`,
-        `[POLICY DECISION: DENIED] Request dropped prior to AI inference. Asset remains encrypted.`
+        `[POLICY DECISION: DENIED] Credential does not match enrolled asset key. Request dropped.`
       ]);
 
       setIsEvaluating(false);
@@ -111,7 +127,7 @@ export default function App() {
 
     setTerminalLogs((prev) => [
       ...prev,
-      `[TIER 1 CLEAR] Passphrase string authenticated for principal: ${identity}`,
+      `[TIER 1 CLEAR] Passphrase string matched enrolled asset key for ${identity}.`,
       `[INGEST] Telemetry Vector -> Cadence: ${measuredCadence}ms | Access Hour: ${accessHour}:00 | Violations: ${violations}`,
       `[AI INFERENCE] Running multi-vector observation through Isolation Forest decision trees...`
     ]);
@@ -163,7 +179,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#060913] text-slate-200 p-4 md:p-8 selection:bg-blue-600 selection:text-white">
-      {/* Top Navigation Bar */}
+      {/* Header */}
       <header className="flex flex-col md:flex-row items-start md:items-center justify-between pb-6 border-b border-slate-800 gap-4">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-blue-600/20 border border-blue-500/30 rounded-xl text-blue-400 shadow-inner">
@@ -196,7 +212,7 @@ export default function App() {
 
       {/* Main Grid matching Figure 6.2.1 */}
       <main className="grid grid-cols-1 lg:grid-cols-12 gap-6 my-6">
-        {/* Left Column: Contextual Security Signals Panel */}
+        {/* Left Column: Contextual Security Signals */}
         <section className="lg:col-span-6 bg-[#0d1322] border border-slate-800 rounded-xl p-6 shadow-2xl relative overflow-hidden">
           <div className="flex items-center justify-between pb-4 mb-5 border-b border-slate-800/80">
             <div className="flex items-center gap-2">
@@ -205,10 +221,6 @@ export default function App() {
                 Contextual Security Signals
               </h2>
             </div>
-            <span className="text-[11px] font-mono text-slate-400 flex items-center gap-1">
-              <KeyRound className="w-3 h-3 text-cyan-400" />
-              Passphrase: <code className="text-cyan-300">Aegis@2026</code>
-            </span>
           </div>
 
           <form onSubmit={handleEvaluate} className="space-y-4">
@@ -243,13 +255,52 @@ export default function App() {
               />
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider">
-                Live Biometric Keystroke Dynamics Passphrase
-              </label>
+            {/* DYNAMIC PASSPHRASE ENROLLMENT FIELD */}
+            <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+              <div className="flex justify-between items-center mb-1">
+                <label className="text-xs font-medium text-cyan-400 flex items-center gap-1.5 uppercase tracking-wider">
+                  <KeyRound className="w-3.5 h-3.5" /> Enrolled Asset Secret Passphrase
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowRegisteredPass(!showRegisteredPass)}
+                  className="text-slate-400 hover:text-cyan-400 text-xs flex items-center gap-1"
+                >
+                  {showRegisteredPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  {showRegisteredPass ? "Hide" : "Show"}
+                </button>
+              </div>
               <input
-                type="password"
-                placeholder="Type 'Aegis@2026' to capture live typing cadence..."
+                type={showRegisteredPass ? "text" : "password"}
+                value={registeredPassphrase}
+                onChange={(e) => setRegisteredPassphrase(e.target.value)}
+                placeholder="Set whatever secret passphrase you want..."
+                className="w-full bg-[#070b14] border border-cyan-900/60 rounded-lg px-3 py-2 text-sm text-cyan-200 focus:outline-none focus:border-cyan-500 font-mono tracking-wider"
+                required
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Change this value anytime to simulate custom organizational secrets.
+              </p>
+            </div>
+
+            {/* LIVE BIOMETRIC CHALLENGE INPUT */}
+            <div>
+              <div className="flex justify-between items-center mb-1.5">
+                <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+                  Live Biometric Keystroke Dynamics Passphrase
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowChallengePass(!showChallengePass)}
+                  className="text-slate-400 hover:text-slate-200 text-xs flex items-center gap-1"
+                >
+                  {showChallengePass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  {showChallengePass ? "Hide" : "Show"}
+                </button>
+              </div>
+              <input
+                type={showChallengePass ? "text" : "password"}
+                placeholder={`Type '${registeredPassphrase}' to capture live typing cadence...`}
                 value={passphrase}
                 onKeyDown={handleKeyDown}
                 onChange={(e) => setPassphrase(e.target.value)}
@@ -277,9 +328,20 @@ export default function App() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider">
-                  Hourly Access Violations
-                </label>
+                <div className="flex justify-between items-center mb-1.5">
+                  <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+                    Hourly Access Violations
+                  </label>
+                  {violations > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleResetViolations}
+                      className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-0.5"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5" /> Reset
+                    </button>
+                  )}
+                </div>
                 <input
                   type="number"
                   min="0"
@@ -326,7 +388,7 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto space-y-1.5 text-xs text-slate-300 max-h-[340px] pr-2 scroll-smooth">
+          <div className="flex-1 overflow-y-auto space-y-1.5 text-xs text-slate-300 max-h-[360px] pr-2 scroll-smooth">
             {terminalLogs.map((log, index) => (
               <div
                 key={index}
